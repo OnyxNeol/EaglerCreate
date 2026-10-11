@@ -29,5 +29,16 @@ const html = source.replace(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi, (tag, 
   writeFileSync(new URL(name, output), code);
   return `<script${attributes} src="/.base44/client/${name}"></script>`;
 });
-writeFileSync(new URL('index.html', output), html);
-console.log(`Prepared ${count} client scripts in ${fileURLToPath(output)}`);
+// Copy the Create block registration script into the externalized client dir.
+const createBlocksSrc = readFileSync(new URL('src/client/create-blocks.js', root), 'utf8');
+new Script(createBlocksSrc, { filename: 'create-blocks.js' });
+writeFileSync(new URL('create-blocks.js', output), createBlocksSrc);
+
+// Inject the block registration script after the EaglerCreate injector bundle.
+const finalHtml = html.replace(
+  '<script src="/dist/eagler-create.js"></script>',
+  '<script src="/dist/eagler-create.js"></script>\n<script src="/.base44/client/create-blocks.js"></script>'
+);
+
+writeFileSync(new URL('index.html', output), finalHtml);
+console.log(`Prepared ${count} client scripts + create-blocks.js in ${fileURLToPath(output)}`);
