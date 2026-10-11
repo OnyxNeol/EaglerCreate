@@ -1,8 +1,10 @@
 // test/harness.js
 // Main test harness: Pyodide loading, UI wiring, Python code execution, tests.
 
-// Access scene and bridge from globalThis (loaded via regular script tags)
-const { engine, Assets, setupRenderer, startAnimationLoop, allBlocks } = globalThis.EaglerCreateScene;
+// Access scene and bridge from globalThis (loaded via regular script tags).
+// Use a Scene reference instead of destructuring to avoid duplicate const
+// declarations with scene.js (both are classic scripts sharing global scope).
+const Scene = globalThis.EaglerCreateScene;
 const PythonBridge = globalThis.PythonBridge;
 
 // ---------------------------------------------------------------------------
@@ -103,7 +105,7 @@ function renderBlockList(pythonBridge) {
   blocksList.innerHTML = '';
 
   // Engine blocks (built-in)
-  for (const block of allBlocks) {
+  for (const block of Scene.allBlocks) {
     const div = document.createElement('div');
     div.className = 'block-entry';
     div.innerHTML = `<span class="bid">${block.id}</span> <span class="bmeta">kind=${block.kind} pos=${block.position.x},${block.position.y},${block.position.z} rpm=${block.speed.toFixed(1)}</span>`;
@@ -118,7 +120,7 @@ function renderBlockList(pythonBridge) {
     blocksList.appendChild(div);
   }
 
-  blockCount.textContent = allBlocks.length + (pythonBridge ? pythonBridge.blockCount : 0);
+  blockCount.textContent = Scene.allBlocks.length + (pythonBridge ? pythonBridge.blockCount : 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +135,7 @@ btnLoadPy.addEventListener('click', async () => {
   pyStatus.className = 'badge loading';
 
   try {
-    pythonBridge = new PythonBridge(engine, Assets, {
+    pythonBridge = new PythonBridge(Scene.engine, Scene.Assets, {
       onLog: (msg) => log(msg, 'info'),
       onError: (msg) => log(msg, 'error'),
     });
@@ -210,11 +212,11 @@ btnTests.addEventListener('click', async () => {
 
 (async () => {
   log('Initializing EaglerCreate kinetic engine…', 'dim');
-  log(`Engine: ${allBlocks.length} blocks placed, ${engine.networks.length} network(s)`, 'info');
+  log(`Engine: ${Scene.allBlocks.length} blocks placed, ${Scene.engine.networks.length} network(s)`, 'info');
 
   try {
-    const { animationBridge } = await setupRenderer();
-    startAnimationLoop(animationBridge);
+    const { animationBridge } = await Scene.setupRenderer();
+    Scene.startAnimationLoop(animationBridge);
     log('3D scene initialized.', 'success');
   } catch (error) {
     log(`Scene initialization error: ${error.message}`, 'error');
@@ -230,7 +232,7 @@ btnTests.addEventListener('click', async () => {
 
 // Update block list periodically to show live RPM.
 setInterval(() => {
-  if (pythonBridge !== null || allBlocks.length > 0) {
+  if (pythonBridge !== null || Scene.allBlocks.length > 0) {
     renderBlockList(pythonBridge);
   }
 }, 2000);
