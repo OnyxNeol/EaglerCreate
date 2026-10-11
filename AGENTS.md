@@ -47,10 +47,20 @@ The preparation script also repairs the EFI launcher Done-button race: keep it
 disabled until the mod list resolves, then use click rather than mousedown so
 keyboard activation works. The vanilla asset loader reports 4,799 EPK resources;
 a subsequent “press any key to enable sound” screen requires user interaction.
-Create's 29 textures and 41 models are present in the bundle, but the injected
-client reports `integration-required`: native shaft/cogwheel/water-wheel/press/
-gearbox blocks and a game renderer are not registered. Do not report these
-assets as visible in-game merely because the global asset map exists.
+`src/client/create-blocks.js` now registers six kinetic blocks and two ores at
+bootstrap. Native registry names require ResourceLocation objects; material
+proxies must be unwrapped with getRef() before calling TeaVM constructors.
+Ores must not be passed to the kinetic adapter (kind `ore` is unsupported).
+Live checks confirmed all eight native blocks and ItemBlocks, Building Blocks
+tab assignment, and injector status `ready`. ItemBlock.getCreativeTab delegates
+to its block; a null Item.tabToDisplayOn field is not evidence of exclusion.
+Registration diagnostics survive noisy startup logs in
+`window.EaglerCreateBlockRegistration`. After editing the registration source,
+rerun `docker compose -f docker-compose.base44.yml run --rm prepare-client` and
+reload the preview; nginx serves the generated copy, not the source file.
+The inventory screen and native Create model/texture rendering are still not
+visually verified. Bundled assets and injector readiness alone do not prove
+correct in-game appearance.
 
 ## Build & Distribution
 

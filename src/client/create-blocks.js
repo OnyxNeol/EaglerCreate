@@ -25,8 +25,13 @@
     { id: 'deepslate_zinc_ore', material: 'rock', hardness: 3, config: { kind: 'ore' } }
   ];
 
+  // Keep registration diagnostics available after noisy vanilla startup logs.
+  var registration = window.EaglerCreateBlockRegistration = { registered: [], errors: [] };
   var log = function (msg) { console.log('[EaglerCreate Blocks] ' + msg); };
-  var warn = function (msg) { console.warn('[EaglerCreate Blocks] ' + msg); };
+  var warn = function (msg) {
+    registration.errors.push(msg);
+    console.warn('[EaglerCreate Blocks] ' + msg);
+  };
 
   // ---- Wait for ModAPI bootstrap, then register blocks ----
   function onBootstrap() {
@@ -73,6 +78,13 @@
       ModAPI.util.getMethodFromPackage('net.minecraft.util.RegistryNamespaced', 'register')
     ];
     if (!registerMethod) { warn('RegistryNamespaced.register not found.'); return; }
+
+    // Registry keys must be native ResourceLocation objects, not Java strings.
+    var ResourceLocationClass = ModAPI.reflect.getClassById('net.minecraft.util.ResourceLocation');
+    var resourceLocationCtor = ResourceLocationClass && ResourceLocationClass.constructors.find(function (ctor) {
+      return ctor.length === 1;
+    });
+    if (!resourceLocationCtor) { warn('ResourceLocation constructor not found.'); return; }
 
     // setUnlocalizedName($this, name) — NOT "setBlockName"
     var setUnlocalizedName = ModAPI.hooks.methods[
@@ -127,7 +139,7 @@
 
         // Create the block instance: Block(Material) — factory function
         var material = ModAPI.materials[def.material] || ModAPI.materials.rock;
-        var block = blockCtor(material);
+        var block = blockCtor(material.getRef());
         if (!block) {
           warn('Block constructor returned null for ' + blockName + ', skipping.');
           continue;
@@ -149,7 +161,7 @@
 
         // Register in the block registry: registry.register(id, name, block)
         // TeaVM convention: $this is the first arg, not via .call().
-        registerMethod(blockRegistry, blockId, ModAPI.util.str(blockName), block);
+        registerMethod(blockRegistry, blockId, resourceLocationCtor(ModAPI.util.str(blockName)), block);
 
         // Register an ItemBlock so the block appears in the creative inventory
         try {
@@ -158,12 +170,16 @@
           warn('ItemBlock registration failed for ' + blockName + ': ' + (e.message || e));
         }
 
-        bindings.push({
-          id: def.id,
-          config: def.config,
-          minecraftBlock: block
-        });
+        // Ores are inventory blocks, not kinetic engine components.
+        if (def.config.kind !== 'ore') {
+          bindings.push({
+            id: def.id,
+            config: def.config,
+            minecraftBlock: block
+          });
+        }
         registered++;
+        registration.registered.push(blockName);
         log('Registered ' + blockName + ' (id: ' + blockId + ')');
       } catch (e) {
         warn('Failed to register ' + blockName + ': ' + (e.message || e));
