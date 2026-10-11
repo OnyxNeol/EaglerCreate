@@ -10,6 +10,19 @@ const source = readFileSync(new URL('eaglercraft-injected.html', root), 'utf8');
 let count = 0;
 const html = source.replace(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi, (tag, attributes, code) => {
   if (/\bsrc\s*=/i.test(attributes) || !code.trim()) return tag;
+  if (attributes.includes('id="modapi_guikit"')) {
+    // Do not let Done dismiss the launcher before its asynchronous mod list
+    // and launch callback are ready. Click also supports keyboard activation.
+    code = code.replace(
+      '<button class="button _doneButton" onclick="this.parentElement.parentElement.remove();">Done</button>',
+      '<button class="button _doneButton" disabled>Done</button>'
+    );
+    code = code.replace(
+      '    if (cb) {\n      document.querySelector("#modapi_gui_container ._doneButton").addEventListener("mousedown", ()=>{',
+      '    const doneButton = document.querySelector("#modapi_gui_container ._doneButton");\n    doneButton.disabled = false;\n    {\n      doneButton.addEventListener("click", ()=>{'
+    );
+    code = code.replace('        cb();', '        if (cb) cb();');
+  }
   const name = `script-${count++}.js`;
   // Fail before serving a broken generated client.
   new Script(code, { filename: name });

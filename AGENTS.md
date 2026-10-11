@@ -43,6 +43,15 @@ the offline client, rerun the preparation job. Verify root startup by checking
 that `main` and `ModAPI` initialize and the mod selection screen appears; the
 JavaScript global alone does not prove gameplay or Python blocks work.
 
+The preparation script also repairs the EFI launcher Done-button race: keep it
+disabled until the mod list resolves, then use click rather than mousedown so
+keyboard activation works. The vanilla asset loader reports 4,799 EPK resources;
+a subsequent “press any key to enable sound” screen requires user interaction.
+Create's 29 textures and 41 models are present in the bundle, but the injected
+client reports `integration-required`: native shaft/cogwheel/water-wheel/press/
+gearbox blocks and a game renderer are not registered. Do not report these
+assets as visible in-game merely because the global asset map exists.
+
 ## Build & Distribution
 
 ```bash
