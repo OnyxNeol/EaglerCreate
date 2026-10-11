@@ -1,0 +1,15 @@
+{
+  "name": "eagler-create",
+  "version": "1.0.0",
+  "description": "EaglerCreate — a port of the Create mod for Eaglercraft (browser-based Minecraft).",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/test.mjs"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18"
+  }
+}

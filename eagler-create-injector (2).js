@@ -269,6 +269,133 @@ function approximatelyEqual(a, b) {
 const clients = new WeakMap();
 const CLIENT_DT = 0.05;
 const CLIENT_TAU = Math.PI * 2;
+
+/**
+ * TickScheduler — orchestrates the full 5-step tick ordering at 20 Hz.
+ *
+ * Step 1: engine.updateNetwork(dt)  — solve kinetic physics
+ * Step 2: inlet funnels → belt.update(dt)  — feed and transport items
+ * Step 3: outlet funnels → chute.update(dt)  — extract and drop items
+ * Step 4: standalone depot processors + hold synchronization
+ * Step 5: grid updates → crafter animation capture → pooled particle emitters
+ *
+ * All inventory mutations flow through commitCraft/transferItems for atomic
+ * transactions that prevent item duplication across all block states.
+ */
+class TickScheduler {
+  constructor(engine, { rate = 20 } = {}) {
+    if (!engine) throw new TypeError('engine is required');
+    if (!Number.isFinite(rate) || rate <= 0 || rate > 1000) throw new RangeError('rate must be in (0, 1000]');
+    this.engine = engine;
+    this.dt = 1 / rate;
+    this.rate = rate;
+    this._inletFunnels = [];
+    this._belts = [];
+    this._outletFunnels = [];
+    this._chutes = [];
+    this._depots = [];
+    this._depotProcessors = [];
+    this._grids = [];
+    this._crafterAnimations = [];
+    this._particleSystems = [];
+    this._animationBridge = null;
+    this._disposed = false;
+  }
+
+  addInletFunnel(funnel) { this._inletFunnels.push(funnel); return funnel; }
+  addBelt(belt) { this._belts.push(belt); return belt; }
+  addOutletFunnel(funnel) { this._outletFunnels.push(funnel); return funnel; }
+  addChute(chute) { this._chutes.push(chute); return chute; }
+  addDepot(depot) { this._depots.push(depot); return depot; }
+  addDepotProcessor(processor) { this._depotProcessors.push(processor); return processor; }
+  addGrid(grid) { this._grids.push(grid); return grid; }
+  addCrafterAnimation(animation) { this._crafterAnimations.push(animation); return animation; }
+  addParticleSystem(system) { this._particleSystems.push(system); return system; }
+  setAnimationBridge(bridge) { this._animationBridge = bridge; return bridge; }
+
+  removeInletFunnel(funnel) { const i = this._inletFunnels.indexOf(funnel); if (i >= 0) this._inletFunnels.splice(i, 1); }
+  removeBelt(belt) { const i = this._belts.indexOf(belt); if (i >= 0) this._belts.splice(i, 1); }
+  removeOutletFunnel(funnel) { const i = this._outletFunnels.indexOf(funnel); if (i >= 0) this._outletFunnels.splice(i, 1); }
+  removeChute(chute) { const i = this._chutes.indexOf(chute); if (i >= 0) this._chutes.splice(i, 1); }
+  removeDepot(depot) { const i = this._depots.indexOf(depot); if (i >= 0) this._depots.splice(i, 1); }
+  removeDepotProcessor(processor) { const i = this._depotProcessors.indexOf(processor); if (i >= 0) this._depotProcessors.splice(i, 1); }
+  removeGrid(grid) { const i = this._grids.indexOf(grid); if (i >= 0) this._grids.splice(i, 1); }
+  removeCrafterAnimation(animation) { const i = this._crafterAnimations.indexOf(animation); if (i >= 0) this._crafterAnimations.splice(i, 1); }
+  removeParticleSystem(system) { const i = this._particleSystems.indexOf(system); if (i >= 0) this._particleSystems.splice(i, 1); }
+
+  tick(dt = this.dt) {
+    if (this._disposed) return;
+    if (!Number.isFinite(dt) || dt < 0 || dt > 1) throw new RangeError('dt must be seconds in [0,1]');
+
+    // Step 1: Kinetic network solve — RPM, stress, capacity, overload.
+    this.engine.updateNetwork(dt);
+
+    // Step 2: Inlet funnels (feed items onto belts/depots), then belt update
+    // (including station processors for presses and deployers).
+    for (let i = 0; i < this._inletFunnels.length; i++) {
+      const f = this._inletFunnels[i]; if (f.enabled) f.update(dt);
+    }
+    for (let i = 0; i < this._belts.length; i++) {
+      const b = this._belts[i]; if (!b.disposed) b.update(dt);
+    }
+
+    // Step 3: Outlet funnels (extract from belts/depots) and chute update.
+    for (let i = 0; i < this._outletFunnels.length; i++) {
+      const f = this._outletFunnels[i]; if (f.enabled) f.update(dt);
+    }
+    for (let i = 0; i < this._chutes.length; i++) {
+      const c = this._chutes[i]; if (!c.disposed) c.update(dt);
+    }
+
+    // Step 4: Standalone depot processors + hold synchronization.
+    for (let i = 0; i < this._depotProcessors.length; i++) this._depotProcessors[i].update(dt);
+    for (let i = 0; i < this._depots.length; i++) {
+      const d = this._depots[i]; if (d.disposed) continue;
+      // Depot.syncProcessor is called by the host for each attached processor.
+    }
+
+    // Step 5: Grid updates, crafter animation capture, pooled particle emitters,
+    // and animation bridge capture for render interpolation.
+    for (let i = 0; i < this._grids.length; i++) this._grids[i].update(dt);
+    for (let i = 0; i < this._crafterAnimations.length; i++) this._crafterAnimations[i].captureTick(dt);
+    if (this._animationBridge && typeof this._animationBridge.captureTick === 'function') {
+      this._animationBridge.captureTick(dt);
+    }
+    for (let i = 0; i < this._particleSystems.length; i++) {
+      const s = this._particleSystems[i]; if (!s.disposed) s.update(dt);
+    }
+  }
+
+  dispose() {
+    if (this._disposed) return [];
+    this._disposed = true;
+    const returned = [];
+    for (const belt of this._belts) {
+      if (!belt.disposed && typeof belt.dispose === 'function') {
+        const invs = belt.dispose(); if (Array.isArray(invs)) returned.push(...invs);
+      }
+    }
+    for (const depot of this._depots) {
+      if (!depot.disposed && typeof depot.dispose === 'function') {
+        const inv = depot.dispose(); if (inv) returned.push(inv);
+      }
+    }
+    for (const chute of this._chutes) {
+      if (!chute.disposed && typeof chute.dispose === 'function') {
+        const inv = chute.dispose(); if (inv) returned.push(inv);
+      }
+    }
+    for (const system of this._particleSystems) {
+      if (!system.disposed && typeof system.dispose === 'function') system.dispose();
+    }
+    this._inletFunnels.length = 0; this._belts.length = 0; this._outletFunnels.length = 0;
+    this._chutes.length = 0; this._depots.length = 0; this._depotProcessors.length = 0;
+    this._grids.length = 0; this._crafterAnimations.length = 0; this._particleSystems.length = 0;
+    this._animationBridge = null;
+    return returned;
+  }
+}
+
 const DEFAULT_BLOCKS = [
   { id: 'shaft', config: { kind: 'shaft' } },
   { id: 'cogwheel', config: { kind: 'cog', gearRadius: 1 } },
@@ -316,6 +443,7 @@ class EaglerForgeAdapter {
     this._position = { x: 0, y: 0, z: 0 }; // Scratch neighbor lookup vector.
     this._insideTick = false;
     this._renderer = null;
+    this._tickScheduler = null;
   }
 
   get ready() {
@@ -350,6 +478,8 @@ class EaglerForgeAdapter {
         if (native != null) this._nativeBlocks.set(native, binding);
       }
       this._renderer = c.renderer ?? null;
+      this._tickScheduler = new TickScheduler(this.engine);
+      if (this._renderer) this._tickScheduler.setAnimationBridge(this._renderer);
       this.active = true;
       const events = c.events ?? {};
       this.capabilities.tick = this._listen(events.tick ?? 'update', () => this._tick(), 'tick');
@@ -581,8 +711,14 @@ class EaglerForgeAdapter {
     try {
       const list = this._renderList;
       for (let i = 0; i < list.length; i++) list[i].previousAngle = list[i].block.angle;
-      this.engine.updateNetwork(CLIENT_DT);
-      if (typeof this._renderer?.captureTick === 'function') {
+      // Run the full 5-step tick ordering: engine solve → inlet funnels → belts
+      // → outlet funnels → chutes → depot processors → grids/crafters/particles
+      // → animation bridge capture. The tick scheduler orchestrates all steps.
+      this._tickScheduler.tick(CLIENT_DT);
+      // Also capture tick on the renderer if it has its own captureTick (e.g.
+      // WebGLModelRenderer animated texture frame cycling).
+      if (this._renderer && typeof this._renderer.captureTick === 'function'
+          && this._tickScheduler._animationBridge !== this._renderer) {
         try { this._renderer.captureTick(CLIENT_DT); } catch (error) { this._warn('renderer-tick', error); }
       }
       for (let i = 0; i < list.length; i++) list[i].delta = list[i].block.speed / 60 * CLIENT_DT * CLIENT_TAU;
@@ -618,6 +754,7 @@ class EaglerForgeAdapter {
   dispose() {
     if (this.disposed) return;
     this.active = false; this.disposed = true;
+    if (this._tickScheduler) { this._tickScheduler.dispose(); this._tickScheduler = null; }
     for (let i = this._cleanup.length - 1; i >= 0; i--) {
       try { this._cleanup[i](); } catch (error) { this._warn('cleanup', error); }
     }
@@ -2414,7 +2551,7 @@ class WebGLModelRenderer {
   constructor(canvas, textures) {
     const gl = canvas.getContext('webgl', { alpha: false, antialias: true });
     if (!gl) throw new Error('WebGL unavailable');
-    this.gl = gl; this.canvas = canvas; this._meshes = new Map(); this._textures = new Map(); this.disposed = false;
+    this.gl = gl; this.canvas = canvas; this._meshes = new Map(); this._textures = new Map(); this._animatedTextures = []; this.disposed = false;
     this.camera = identity4(new Float32Array(16));
     const compile = (type, source) => {
       const shader = gl.createShader(type); gl.shaderSource(shader, source); gl.compileShader(shader);
@@ -2440,7 +2577,34 @@ class WebGLModelRenderer {
       const frameHeight = animation ? animation.height ?? Math.min(image.width, image.height) : image.height;
       const first = animation?.frames?.[0] ?? 0;
       const index = typeof first === 'number' ? first : first.index;
-      this._textures.set(id, { texture, scale: frameHeight / image.height, offset: index * frameHeight / image.height });
+      const frameCount = animation ? (animation.frames ? animation.frames.length : Math.floor(image.height / frameHeight)) : 1;
+      const frametime = animation?.frametime ?? 1;
+      const entry = { texture, scale: frameHeight / image.height, offset: index * frameHeight / image.height,
+        animated: !!animation, frameHeight, frameCount, frametime, currentFrame: index, elapsed: 0, frames: animation?.frames || null };
+      this._textures.set(id, entry);
+      if (entry.animated) this._animatedTextures.push(entry);
+    }
+  }
+  /** Advance animated texture frames at 20 Hz. No texture re-upload needed. */
+  captureTick(dt = 0.05) {
+    if (this.disposed) return;
+    if (!Number.isFinite(dt) || dt < 0 || dt > 1) throw new RangeError('dt must be seconds in [0,1]');
+    const ticks = dt / 0.05;
+    for (let i = 0; i < this._animatedTextures.length; i++) {
+      const tex = this._animatedTextures[i];
+      tex.elapsed += ticks;
+      while (tex.elapsed >= tex.frametime) {
+        tex.elapsed -= tex.frametime;
+        if (tex.frames) {
+          tex.currentFrame = (tex.currentFrame + 1) % tex.frameCount;
+          const fd = tex.frames[tex.currentFrame];
+          const fi = typeof fd === 'number' ? fd : fd.index;
+          tex.offset = fi * tex.scale;
+        } else {
+          tex.currentFrame = (tex.currentFrame + 1) % tex.frameCount;
+          tex.offset = tex.currentFrame * tex.scale;
+        }
+      }
     }
   }
   /** Upload once before rendering to avoid buffer allocations on steady frames. */
@@ -2486,7 +2650,7 @@ class WebGLModelRenderer {
     this.disposed = true; const gl = this.gl;
     for (const batches of this._meshes.values()) for (const batch of batches) for (const buffer of batch.buffers) gl.deleteBuffer(buffer);
     for (const { texture } of this._textures.values()) gl.deleteTexture(texture);
-    gl.deleteProgram(this.program); this._meshes.clear(); this._textures.clear();
+    gl.deleteProgram(this.program); this._meshes.clear(); this._textures.clear(); this._animatedTextures.length = 0;
   }
 }
 
@@ -2655,6 +2819,7 @@ EaglerCreate.KineticBlock = KineticBlock;
 EaglerCreate.KineticNetwork = KineticNetwork;
 EaglerCreate.KineticEngine = KineticEngine;
 EaglerCreate.EaglerForgeAdapter = EaglerForgeAdapter;
+EaglerCreate.TickScheduler = TickScheduler;
 EaglerCreate.createCanvasKineticRenderer = createCanvasKineticRenderer;
 if (global.EaglerCreate !== undefined) throw new Error("EaglerCreate is already loaded");
 global.EaglerCreate = EaglerCreate;

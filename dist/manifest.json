@@ -1,6 +1,12 @@
 {
   "name": "EaglerCreate",
   "version": "1.0.0",
+  "buildDate": "2026-10-11T01:31:52.199Z",
+  "assets": {
+    "textures": 29,
+    "models": 41,
+    "revision": "588124239141029c5321afd38d20c2eaf872b32b"
+  },
   "modules": [
     {
       "id": "eagler-create-core",
