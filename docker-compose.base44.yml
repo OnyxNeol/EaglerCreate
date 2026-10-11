@@ -7,7 +7,7 @@ services:
       - ./:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/test/index.html"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/test/index.html"]
       interval: 5s
       timeout: 3s
       retries: 6
