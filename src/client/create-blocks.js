@@ -1,7 +1,8 @@
 // src/client/create-blocks.js
-// Registers Create mod blocks as native Minecraft blocks via Eaglercraft's
-// ModAPI reflection system, then configures the EaglerCreateInjector with a
-// WebGL/Canvas renderer so the injector status reaches "ready".
+// Registers Create mod blocks (kinetic machines + ores) as native Minecraft
+// blocks via Eaglercraft's ModAPI reflection system, then configures the
+// EaglerCreateInjector with a WebGL/Canvas renderer so the injector status
+// reaches "ready".
 //
 // This script is externalized by scripts/prepare-client.mjs and loaded after
 // the EaglerCreate injector bundle (dist/eagler-create.js).
@@ -11,14 +12,17 @@
 (function () {
   'use strict';
 
-  // ---- Block definitions matching the injector's DEFAULT_BLOCKS ----
+  // ---- Block definitions matching the injector's DEFAULT_BLOCKS + ores ----
   var CREATE_BLOCKS = [
     { id: 'shaft',            material: 'rock',  hardness: 3, config: { kind: 'shaft' } },
     { id: 'cogwheel',         material: 'rock',  hardness: 3, config: { kind: 'cog', gearRadius: 1 } },
     { id: 'large_cogwheel',   material: 'rock',  hardness: 3, config: { kind: 'cog', gearRadius: 2 } },
-    { id: 'water_wheel',     material: 'wood',  hardness: 2, config: { kind: 'source', isSource: true, sourceSpeed: 32, capacity: 8 } },
+    { id: 'water_wheel',      material: 'wood',  hardness: 2, config: { kind: 'source', isSource: true, sourceSpeed: 32, capacity: 8 } },
     { id: 'mechanical_press', material: 'iron', hardness: 4, config: { kind: 'consumer', stress: 8 } },
-    { id: 'gearbox',         material: 'rock',  hardness: 3, config: { kind: 'gearbox', facing: { x: 0, y: 1, z: 0 } } }
+    { id: 'gearbox',         material: 'rock',  hardness: 3, config: { kind: 'gearbox', facing: { x: 0, y: 1, z: 0 } } },
+    // Ores
+    { id: 'zinc_ore',           material: 'rock', hardness: 3, config: { kind: 'ore' } },
+    { id: 'deepslate_zinc_ore', material: 'rock', hardness: 3, config: { kind: 'ore' } }
   ];
 
   var log = function (msg) { console.log('[EaglerCreate Blocks] ' + msg); };
@@ -32,7 +36,7 @@
       return;
     }
 
-    // ModAPI.bootstrap() populates ModAPI.blocks, ModAPI.materials, etc.
+    // ModAPI.util.bootstrap() populates ModAPI.blocks, ModAPI.materials, etc.
     // The bootstrap event fires after that. If blocks aren't ready yet,
     // wait for the event.
     if (!ModAPI.blocks || !ModAPI.materials) {
@@ -53,27 +57,55 @@
       return;
     }
 
+    // ---- Resolve ModAPI reflection objects ----
     var BlockClass = ModAPI.reflect.getClassById('net.minecraft.block.Block');
+    if (!BlockClass) { warn('Block class not found in ModAPI reflect.'); return; }
+
+    // In 1.8 the registry is blockRegistry; in 1.12 it's aliased to REGISTRY
     var blockRegistry = ModAPI.is_1_12
       ? BlockClass.staticVariables.REGISTRY
       : BlockClass.staticVariables.blockRegistry;
+    if (!blockRegistry) { warn('Block registry not found.'); return; }
 
-    // Get the register method from the hooked RegistryNamespaced
+    // The register method — TeaVM instance method: register($this, id, name, block)
+    // ModAPI wraps it so args[0] is $this (the registry).
     var registerMethod = ModAPI.hooks.methods[
       ModAPI.util.getMethodFromPackage('net.minecraft.util.RegistryNamespaced', 'register')
     ];
+    if (!registerMethod) { warn('RegistryNamespaced.register not found.'); return; }
 
-    // Find a Block constructor that accepts a Material (1.8: Block(Material))
-    var constructors = BlockClass.constructors;
+    // setUnlocalizedName($this, name) — NOT "setBlockName"
+    var setUnlocalizedName = ModAPI.hooks.methods[
+      ModAPI.util.getMethodFromPackage('net.minecraft.block.Block', 'setUnlocalizedName')
+    ];
+    // setHardness($this, hardness)
+    var setHardness = ModAPI.hooks.methods[
+      ModAPI.util.getMethodFromPackage('net.minecraft.block.Block', 'setHardness')
+    ];
+    // setCreativeTab($this, tab)
+    var setCreativeTab = ModAPI.hooks.methods[
+      ModAPI.util.getMethodFromPackage('net.minecraft.block.Block', 'setCreativeTab')
+    ];
+    // registerItemBlock0($blockIn) — creates an ItemBlock + registers it
+    var registerItemBlock = ModAPI.hooks.methods[
+      ModAPI.util.getMethodFromPackage('net.minecraft.item.Item', 'registerItemBlock0')
+    ];
+
+    // CreativeTabs.tabBlock — the "Building Blocks" creative tab
+    var CreativeTabsClass = ModAPI.reflect.getClassById('net.minecraft.creativetab.CreativeTabs');
+    var tabBlock = CreativeTabsClass ? CreativeTabsClass.staticVariables.tabBlock : null;
+
+    // Find a Block constructor that accepts a single Material argument.
+    // TeaVM ripped constructors are factory functions: nmb_Block__init_1(material)
     var blockCtor = null;
-    for (var i = 0; i < constructors.length; i++) {
-      if (constructors[i].length === 2 || constructors[i].length === 1) {
-        blockCtor = constructors[i];
+    for (var i = 0; i < BlockClass.constructors.length; i++) {
+      if (BlockClass.constructors[i].length === 1) {
+        blockCtor = BlockClass.constructors[i];
         break;
       }
     }
     if (!blockCtor) {
-      warn('No suitable Block constructor found, using fallback binding strategy.');
+      warn('No single-arg Block constructor found, using fallback binding strategy.');
       configureInjector(EC, ECA, []);
       return;
     }
@@ -93,32 +125,38 @@
           continue;
         }
 
-        // Create the block instance: Block(Material)
+        // Create the block instance: Block(Material) — factory function
         var material = ModAPI.materials[def.material] || ModAPI.materials.rock;
         var block = blockCtor(material);
+        if (!block) {
+          warn('Block constructor returned null for ' + blockName + ', skipping.');
+          continue;
+        }
 
-        // Set block properties via reflection
-        // setBlockName(String) → unlocalised name
-        // setHardness(float) / setResistance(float)
-        // setCreativeTab(CreativeTabs.tabBlock) for creative inventory
+        // Set block properties via reflection.
+        // TeaVM instance methods take $this as the FIRST ARGUMENT, not via .call().
         try {
-          var nameStr = ModAPI.util.str(blockName);
-          var setBlockName = ModAPI.hooks.methods[
-            ModAPI.util.getMethodFromPackage('net.minecraft.block.Block', 'setBlockName')
-          ];
-          if (setBlockName) setBlockName.call(block, nameStr);
+          if (setUnlocalizedName) setUnlocalizedName(block, ModAPI.util.str(blockName));
         } catch (e) { /* non-fatal */ }
 
         try {
-          var setHardness = ModAPI.hooks.methods[
-            ModAPI.util.getMethodFromPackage('net.minecraft.block.Block', 'setHardness')
-          ];
-          if (setHardness) setHardness.call(block, def.hardness);
+          if (setHardness) setHardness(block, def.hardness);
+        } catch (e) { /* non-fatal */ }
+
+        try {
+          if (setCreativeTab && tabBlock) setCreativeTab(block, tabBlock);
         } catch (e) { /* non-fatal */ }
 
         // Register in the block registry: registry.register(id, name, block)
-        // In TeaVM, `this` is passed as the first argument.
-        registerMethod.call(blockRegistry, blockId, ModAPI.util.str(blockName), block);
+        // TeaVM convention: $this is the first arg, not via .call().
+        registerMethod(blockRegistry, blockId, ModAPI.util.str(blockName), block);
+
+        // Register an ItemBlock so the block appears in the creative inventory
+        try {
+          if (registerItemBlock) registerItemBlock(block);
+        } catch (e) {
+          warn('ItemBlock registration failed for ' + blockName + ': ' + (e.message || e));
+        }
 
         bindings.push({
           id: def.id,
