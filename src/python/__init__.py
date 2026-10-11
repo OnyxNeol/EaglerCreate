@@ -1,0 +1,1 @@
+"""EaglerCreate Python modding package."""

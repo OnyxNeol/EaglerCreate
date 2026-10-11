@@ -1,0 +1,34 @@
+{
+  "name": "EaglerCreate",
+  "version": "1.0.0",
+  "modules": [
+    {
+      "id": "eagler-create-core",
+      "path": "eagler-create-injector (2).js",
+      "description": "Core EaglerCreate injector bundle — kinetic engine, logistics, rendering, assets.",
+      "global": "EaglerCreate"
+    },
+    {
+      "id": "eagler-forge-python",
+      "path": "src/client/eagler-forge-python.mjs",
+      "description": "Pyodide runtime bridge — bidirectional JS-to-Python event bridge for EaglerForge.",
+      "export": "PythonBridge"
+    },
+    {
+      "id": "eaglerforge-py",
+      "path": "src/python/eaglerforge.py",
+      "description": "Python modding API — createblock() and MyCustomBlock for declarative block registration."
+    }
+  ],
+  "tests": [
+    {
+      "id": "test-blocks",
+      "path": "test/tests/test_blocks.py",
+      "description": "Unit tests for Python block registration, textures, rarity, and callbacks."
+    }
+  ],
+  "license": {
+    "code": "MIT",
+    "assets": "All Rights Reserved"
+  }
+}
