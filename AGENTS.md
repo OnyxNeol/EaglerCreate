@@ -34,6 +34,15 @@ docker compose -f docker-compose.base44.yml up -d
 
 Then open the preview at port 3000. The test harness page is at `/test/index.html`.
 
+The root serves an EFI-injected offline client supplied locally as the ignored
+`eaglercraft-injected.html`. `scripts/prepare-client.mjs` extracts its inline
+scripts into ignored `.base44/client/` files before nginx starts. Do not serve
+the original HTML directly: preview HTML rewriting injects bridge scripts into
+HTML strings in the game's string pool, causing syntax errors. After replacing
+the offline client, rerun the preparation job. Verify root startup by checking
+that `main` and `ModAPI` initialize and the mod selection screen appears; the
+JavaScript global alone does not prove gameplay or Python blocks work.
+
 ## Build & Distribution
 
 ```bash

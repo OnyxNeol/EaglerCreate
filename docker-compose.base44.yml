@@ -1,13 +1,22 @@
 services:
+  prepare-client:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: ["node", "scripts/prepare-client.mjs"]
   web:
     image: nginx:alpine
+    depends_on:
+      prepare-client:
+        condition: service_completed_successfully
     ports:
       - "3000:80"
     volumes:
       - ./:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/test/index.html"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
       interval: 5s
       timeout: 3s
       retries: 6
