@@ -1,29 +1,18 @@
-// src/client/create-blocks.js
-// Registers Create mod blocks (kinetic machines + ores) as native Minecraft
-// blocks via Eaglercraft's ModAPI reflection system, then configures the
-// EaglerCreateInjector with a WebGL/Canvas renderer so the injector status
-// reaches "ready".
+// Registers ALL Create mod blocks and items as native Minecraft objects
+// via Eaglercraft's ModAPI reflection system. Injects proper display names
+// into the language map and hooks ModelBakery.loadModel so Create model
+// JSONs from EaglerCreateAssets are used for in-game rendering.
 //
 // This script is externalized by scripts/prepare-client.mjs and loaded after
-// the EaglerCreate injector bundle (dist/eagler-create.js).
+// the EaglerCreate injector bundle (dist/eagler-create.js) and create-catalog.js.
 //
 // MIT License. Copyright (c) The Create Team / The Creators of Create.
 
 (function () {
   'use strict';
 
-  // ---- Block definitions matching the injector's DEFAULT_BLOCKS + ores ----
-  var CREATE_BLOCKS = [
-    { id: 'shaft',            material: 'rock',  hardness: 3, config: { kind: 'shaft' } },
-    { id: 'cogwheel',         material: 'rock',  hardness: 3, config: { kind: 'cog', gearRadius: 1 } },
-    { id: 'large_cogwheel',   material: 'rock',  hardness: 3, config: { kind: 'cog', gearRadius: 2 } },
-    { id: 'water_wheel',      material: 'wood',  hardness: 2, config: { kind: 'source', isSource: true, sourceSpeed: 32, capacity: 8 } },
-    { id: 'mechanical_press', material: 'iron', hardness: 4, config: { kind: 'consumer', stress: 8 } },
-    { id: 'gearbox',         material: 'rock',  hardness: 3, config: { kind: 'gearbox', facing: { x: 0, y: 1, z: 0 } } },
-    // Ores
-    { id: 'zinc_ore',           material: 'rock', hardness: 3, config: { kind: 'ore' } },
-    { id: 'deepslate_zinc_ore', material: 'rock', hardness: 3, config: { kind: 'ore' } }
-  ];
+  var catalog = globalThis.CreateCatalog;
+  if (!catalog) { console.warn('[EaglerCreate Blocks] create-catalog.js not loaded.'); return; }
 
   // Keep registration diagnostics available after noisy vanilla startup logs.
   var registration = window.EaglerCreateBlockRegistration = { registered: [], errors: [] };
@@ -33,7 +22,7 @@
     console.warn('[EaglerCreate Blocks] ' + msg);
   };
 
-  // ---- Wait for ModAPI bootstrap, then register blocks ----
+  // ---- Wait for ModAPI bootstrap, then register everything ----
   function onBootstrap() {
     if (!window.ModAPI || typeof ModAPI.addEventListener !== 'function') {
       warn('ModAPI not available, retrying in 500ms…');
@@ -41,177 +30,266 @@
       return;
     }
 
-    // ModAPI.util.bootstrap() populates ModAPI.blocks, ModAPI.materials, etc.
-    // The bootstrap event fires after that. If blocks aren't ready yet,
-    // wait for the event.
     if (!ModAPI.blocks || !ModAPI.materials) {
       log('Waiting for bootstrap event…');
-      ModAPI.addEventListener('bootstrap', registerBlocks);
+      ModAPI.addEventListener('bootstrap', registerAll);
     } else {
-      registerBlocks();
+      registerAll();
     }
   }
 
-  function registerBlocks() {
-    log('ModAPI bootstrap complete, registering Create blocks…');
+  function registerAll() {
+    log('ModAPI bootstrap complete, registering all Create items…');
 
     var EC = window.EaglerCreate;
     var ECA = window.EaglerCreateAssets;
-    if (!EC || !ECA) {
-      warn('EaglerCreate engine or assets not loaded.');
-      return;
-    }
+    if (!EC || !ECA) { warn('EaglerCreate engine or assets not loaded.'); return; }
 
-    // ---- Resolve ModAPI reflection objects ----
+    // ---- Resolve shared reflection objects ----
     var BlockClass = ModAPI.reflect.getClassById('net.minecraft.block.Block');
-    if (!BlockClass) { warn('Block class not found in ModAPI reflect.'); return; }
+    if (!BlockClass) { warn('Block class not found.'); return; }
 
-    // In 1.8 the registry is blockRegistry; in 1.12 it's aliased to REGISTRY
     var blockRegistry = ModAPI.is_1_12
       ? BlockClass.staticVariables.REGISTRY
       : BlockClass.staticVariables.blockRegistry;
     if (!blockRegistry) { warn('Block registry not found.'); return; }
 
-    // The register method — TeaVM instance method: register($this, id, name, block)
-    // ModAPI wraps it so args[0] is $this (the registry).
+    var ItemClass = ModAPI.reflect.getClassById('net.minecraft.item.Item');
+    var itemRegistry = ItemClass
+      ? (ModAPI.is_1_12 ? ItemClass.staticVariables.REGISTRY : ItemClass.staticVariables.itemRegistry)
+      : null;
+
     var registerMethod = ModAPI.hooks.methods[
       ModAPI.util.getMethodFromPackage('net.minecraft.util.RegistryNamespaced', 'register')
     ];
     if (!registerMethod) { warn('RegistryNamespaced.register not found.'); return; }
 
-    // Registry keys must be native ResourceLocation objects, not Java strings.
     var ResourceLocationClass = ModAPI.reflect.getClassById('net.minecraft.util.ResourceLocation');
-    var resourceLocationCtor = ResourceLocationClass && ResourceLocationClass.constructors.find(function (ctor) {
-      return ctor.length === 1;
-    });
+    var resourceLocationCtor = ResourceLocationClass && ResourceLocationClass.constructors.find(function (c) { return c.length === 1; });
     if (!resourceLocationCtor) { warn('ResourceLocation constructor not found.'); return; }
 
-    // setUnlocalizedName($this, name) — NOT "setBlockName"
+    // Block methods
     var setUnlocalizedName = ModAPI.hooks.methods[
-      ModAPI.util.getMethodFromPackage('net.minecraft.block.Block', 'setUnlocalizedName')
-    ];
-    // setHardness($this, hardness)
+      ModAPI.util.getMethodFromPackage('net.minecraft.block.Block', 'setUnlocalizedName')];
     var setHardness = ModAPI.hooks.methods[
-      ModAPI.util.getMethodFromPackage('net.minecraft.block.Block', 'setHardness')
-    ];
-    // setCreativeTab($this, tab)
+      ModAPI.util.getMethodFromPackage('net.minecraft.block.Block', 'setHardness')];
     var setCreativeTab = ModAPI.hooks.methods[
-      ModAPI.util.getMethodFromPackage('net.minecraft.block.Block', 'setCreativeTab')
-    ];
-    // registerItemBlock0($blockIn) — creates an ItemBlock + registers it
+      ModAPI.util.getMethodFromPackage('net.minecraft.block.Block', 'setCreativeTab')];
     var registerItemBlock = ModAPI.hooks.methods[
-      ModAPI.util.getMethodFromPackage('net.minecraft.item.Item', 'registerItemBlock0')
-    ];
+      ModAPI.util.getMethodFromPackage('net.minecraft.item.Item', 'registerItemBlock0')];
 
-    // CreativeTabs.tabBlock — the "Building Blocks" creative tab
+    // Item methods
+    var itemSetUnlocalizedName = ModAPI.hooks.methods[
+      ModAPI.util.getMethodFromPackage('net.minecraft.item.Item', 'setUnlocalizedName')];
+    var itemSetCreativeTab = ModAPI.hooks.methods[
+      ModAPI.util.getMethodFromPackage('net.minecraft.item.Item', 'setCreativeTab')];
+    var itemRegister = ModAPI.hooks.methods[
+      ModAPI.util.getMethodFromPackage('net.minecraft.item.Item', 'registerItem')];
+
+    // Creative tabs
     var CreativeTabsClass = ModAPI.reflect.getClassById('net.minecraft.creativetab.CreativeTabs');
     var tabBlock = CreativeTabsClass ? CreativeTabsClass.staticVariables.tabBlock : null;
+    var tabMaterials = CreativeTabsClass ? CreativeTabsClass.staticVariables.tabMaterials : null;
+    var tabTools = CreativeTabsClass ? CreativeTabsClass.staticVariables.tabTools : null;
 
-    // Find a Block constructor that accepts a single Material argument.
-    // TeaVM ripped constructors are factory functions: nmb_Block__init_1(material)
+    // Block constructor: Block(Material)
     var blockCtor = null;
     for (var i = 0; i < BlockClass.constructors.length; i++) {
-      if (BlockClass.constructors[i].length === 1) {
-        blockCtor = BlockClass.constructors[i];
-        break;
+      if (BlockClass.constructors[i].length === 1) { blockCtor = BlockClass.constructors[i]; break; }
+    }
+    if (!blockCtor) { warn('No single-arg Block constructor found.'); return; }
+
+    // Item constructor: Item() — use ripped constructors directly
+    var itemCtor = null;
+    if (ItemClass && ItemClass.constructors) {
+      for (var j = 0; j < ItemClass.constructors.length; j++) {
+        if (ItemClass.constructors[j].length === 0) { itemCtor = ItemClass.constructors[j]; break; }
       }
     }
-    if (!blockCtor) {
-      warn('No single-arg Block constructor found, using fallback binding strategy.');
-      configureInjector(EC, ECA, []);
-      return;
+    // Fallback: look up in ripped constructors by compiled name
+    if (!itemCtor) {
+      var itemInitKey = ModAPI.util.getCompiledName('net.minecraft.item.Item') + '__init_0';
+      itemCtor = ModAPI.hooks._rippedConstructors[itemInitKey];
     }
 
+    // ---- Hook ModelBakery.loadModel for Create textures ----
+    hookModelBakery(ECA);
+
+    // ---- Register blocks ----
     var bindings = [];
     var registered = 0;
 
-    for (var i = 0; i < CREATE_BLOCKS.length; i++) {
-      var def = CREATE_BLOCKS[i];
-      var blockName = 'create:' + def.id;
+    for (var bi = 0; bi < catalog.BLOCKS.length; bi++) {
+      var bdef = catalog.BLOCKS[bi];
+      var blockName = 'create:' + bdef.id;
 
       try {
-        // Generate a unique numeric block ID
         var blockId = ModAPI.keygen.block(blockName);
-        if (blockId < 0) {
-          warn('Could not generate ID for ' + blockName + ', skipping.');
-          continue;
-        }
+        if (blockId < 0) { warn('Could not generate ID for ' + blockName); continue; }
 
-        // Create the block instance: Block(Material) — factory function
-        var material = ModAPI.materials[def.material] || ModAPI.materials.rock;
+        var material = ModAPI.materials[bdef.material] || ModAPI.materials.rock;
         var block = blockCtor(material.getRef());
-        if (!block) {
-          warn('Block constructor returned null for ' + blockName + ', skipping.');
-          continue;
-        }
+        if (!block) { warn('Block ctor returned null for ' + blockName); continue; }
 
-        // Set block properties via reflection.
-        // TeaVM instance methods take $this as the FIRST ARGUMENT, not via .call().
-        try {
-          if (setUnlocalizedName) setUnlocalizedName(block, ModAPI.util.str(blockName));
-        } catch (e) { /* non-fatal */ }
+        try { if (setUnlocalizedName) setUnlocalizedName(block, ModAPI.util.str(blockName)); } catch (e) {}
+        try { if (setHardness) setHardness(block, bdef.hardness); } catch (e) {}
+        try { if (setCreativeTab && tabBlock) setCreativeTab(block, tabBlock); } catch (e) {}
 
-        try {
-          if (setHardness) setHardness(block, def.hardness);
-        } catch (e) { /* non-fatal */ }
-
-        try {
-          if (setCreativeTab && tabBlock) setCreativeTab(block, tabBlock);
-        } catch (e) { /* non-fatal */ }
-
-        // Register in the block registry: registry.register(id, name, block)
-        // TeaVM convention: $this is the first arg, not via .call().
         registerMethod(blockRegistry, blockId, resourceLocationCtor(ModAPI.util.str(blockName)), block);
 
-        // Register an ItemBlock so the block appears in the creative inventory
-        try {
-          if (registerItemBlock) registerItemBlock(block);
-        } catch (e) {
-          warn('ItemBlock registration failed for ' + blockName + ': ' + (e.message || e));
+        try { if (registerItemBlock) registerItemBlock(block); } catch (e) {
+          warn('ItemBlock failed for ' + blockName + ': ' + (e.message || e));
         }
 
-        // Ores are inventory blocks, not kinetic engine components.
-        if (def.config.kind !== 'ore') {
-          bindings.push({
-            id: def.id,
-            config: def.config,
-            minecraftBlock: block
-          });
+        if (bdef.kind === 'kinetic') {
+          bindings.push({ id: bdef.id, config: bdef.config, minecraftBlock: block });
         }
         registered++;
         registration.registered.push(blockName);
-        log('Registered ' + blockName + ' (id: ' + blockId + ')');
+        log('Registered block ' + blockName + ' (id: ' + blockId + ') — ' + bdef.name);
       } catch (e) {
-        warn('Failed to register ' + blockName + ': ' + (e.message || e));
+        warn('Failed to register block ' + blockName + ': ' + (e.message || e));
       }
     }
 
-    log('Registered ' + registered + '/' + CREATE_BLOCKS.length + ' Create blocks.');
+    // ---- Register standalone items ----
+    for (var ii = 0; ii < catalog.ITEMS.length; ii++) {
+      var idef = catalog.ITEMS[ii];
+      var itemName = 'create:' + idef.id;
+
+      try {
+        if (!itemCtor || !itemRegistry) {
+          log('Item registration unavailable, skipping ' + itemName);
+          continue;
+        }
+
+        var itemId = ModAPI.keygen.item(itemName);
+        if (itemId < 0) { warn('Could not generate item ID for ' + itemName); continue; }
+
+        var item = itemCtor();
+        if (!item) { warn('Item ctor returned null for ' + itemName); continue; }
+
+        try { if (itemSetUnlocalizedName) itemSetUnlocalizedName(item, ModAPI.util.str(itemName)); } catch (e) {}
+        try { if (itemSetCreativeTab && tabMaterials) itemSetCreativeTab(item, tabMaterials); } catch (e) {}
+
+        // Register directly in the item registry (same pattern as blocks)
+        registerMethod(itemRegistry, itemId, resourceLocationCtor(ModAPI.util.str(itemName)), item);
+
+        registered++;
+        registration.registered.push(itemName);
+        log('Registered item ' + itemName + ' (id: ' + itemId + ') — ' + idef.name);
+      } catch (e) {
+        warn('Failed to register item ' + itemName + ': ' + (e.message || e));
+      }
+    }
+
+    // ---- Inject display names into the language map ----
+    injectDisplayNames();
+
+    log('Registered ' + registered + ' Create items total.');
     configureInjector(EC, ECA, bindings);
+  }
+
+  // ---- Inject human-readable display names into Eaglercraft's language map ----
+  function injectDisplayNames() {
+    try {
+      var StatCollector = ModAPI.reflect.getClassById('net.minecraft.util.StatCollector');
+      if (!StatCollector) { warn('StatCollector not found.'); return; }
+      var stringTranslate = StatCollector.staticVariables.localizedName;
+      if (!stringTranslate) { warn('StringTranslate instance not found.'); return; }
+      var langMap = stringTranslate.$languageList;
+      if (!langMap) { warn('Language map not found.'); return; }
+
+      var hashMapPut = ModAPI.hooks.methods[
+        ModAPI.util.getMethodFromPackage('java.util.HashMap', 'put')];
+      if (!hashMapPut) { warn('HashMap.put not found.'); return; }
+
+      var injected = 0;
+
+      // Block names: Block.getUnlocalizedName() returns "tile." + unlocalizedName,
+      // so the translation key is "tile.create:shaft.name" → "Shaft"
+      for (var bi = 0; bi < catalog.BLOCKS.length; bi++) {
+        var bdef = catalog.BLOCKS[bi];
+        var key = 'tile.create:' + bdef.id + '.name';
+        try {
+          hashMapPut(langMap, ModAPI.util.str(key), ModAPI.util.str(bdef.name));
+          injected++;
+        } catch (e) { /* non-fatal */ }
+      }
+
+      // Item names: Item.getUnlocalizedName() returns "item." + unlocalizedName
+      for (var ii = 0; ii < catalog.ITEMS.length; ii++) {
+        var idef = catalog.ITEMS[ii];
+        var ikey = 'item.create:' + idef.id + '.name';
+        try {
+          hashMapPut(langMap, ModAPI.util.str(ikey), ModAPI.util.str(idef.name));
+          injected++;
+        } catch (e) { /* non-fatal */ }
+      }
+
+      log('Injected ' + injected + ' display name translations.');
+    } catch (e) {
+      warn('Language map injection failed: ' + (e.message || e));
+    }
+  }
+
+  // ---- Hook ModelBakery.loadModel to serve Create model JSONs from EaglerCreateAssets ----
+  function hookModelBakery(ECA) {
+    var modelKey = 'nmcrm_ModelBakery_loadModel';
+    var originalLoadModel = ModAPI.hooks.methods[modelKey];
+    if (!originalLoadModel) { warn('ModelBakery.loadModel not found.'); return; }
+
+    var deserialize = ModAPI.hooks.methods[
+      ModAPI.util.getMethodFromPackage('net.minecraft.client.renderer.block.model.ModelBlock', 'deserialize')];
+    if (!deserialize) { warn('ModelBlock.deserialize not found.'); return; }
+
+    var models = ECA.models || {};
+    var hooked = 0;
+
+    ModAPI.hooks.methods[modelKey] = function ($this, $rl) {
+      try {
+        if ($rl && $rl.$resourceDomain) {
+          // $rl.$resourceDomain is a TeaVM string; convert to JS
+          var domain = ModAPI.util.unstr($rl.$resourceDomain);
+          if (domain === 'create') {
+            var path = ModAPI.util.unstr($rl.$resourcePath);
+            // ModelBakery passes paths like "block/shaft" — match to "create:block/shaft"
+            var modelId = 'create:' + path;
+            var modelJson = models[modelId];
+            if (modelJson) {
+              var jsonStr = JSON.stringify(modelJson);
+              var modelBlock = deserialize(ModAPI.util.str(jsonStr));
+              if (modelBlock) {
+                // Set the model name (loadModel does: modelBlock.name = rl.toString())
+                try { modelBlock.$name70 = $rl.$toString ? $rl.$toString() : ModAPI.util.str(modelId); } catch (e) {}
+                hooked++;
+                return modelBlock;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // Fall through to original on any error
+      }
+      return originalLoadModel.call(this, $this, $rl);
+    };
+
+    log('ModelBakery.loadModel hooked for Create textures (' + Object.keys(models).length + ' models available).');
   }
 
   // ---- Configure the EaglerCreateInjector with blocks + renderer ----
   function configureInjector(EC, ECA, bindings) {
     var injector = window.EaglerCreateInjector;
-    if (!injector) {
-      warn('EaglerCreateInjector not found.');
-      return;
-    }
+    if (!injector) { warn('EaglerCreateInjector not found.'); return; }
 
-    // Build the renderer: AnimationBridge backed by WebGL or Canvas
     var renderer = createRenderer(EC, ECA);
-    if (!renderer) {
-      warn('Could not create renderer; configuring without one.');
-    }
+    if (!renderer) { warn('Could not create renderer; configuring without one.'); }
 
-    // Supply getWorld() from ModAPI
     function getWorld() {
       try {
-        if (ModAPI.javaClient && ModAPI.javaClient.$theWorld) {
-          return ModAPI.javaClient.$theWorld;
-        }
+        if (ModAPI.javaClient && ModAPI.javaClient.$theWorld) return ModAPI.javaClient.$theWorld;
         if (ModAPI.world) return ModAPI.world;
-      } catch (e) { /* world not ready yet */ }
+      } catch (e) {}
       return null;
     }
 
@@ -220,12 +298,9 @@
       blocks: bindings.length > 0 ? bindings : undefined,
       renderer: renderer,
       getWorld: getWorld,
-      onWarning: function (diag) {
-        warn('Adapter: ' + diag.code + ' — ' + diag.message);
-      }
+      onWarning: function (diag) { warn('Adapter: ' + diag.code + ' — ' + diag.message); }
     };
 
-    // Store options so the async renderer reconfiguration can reuse them
     window.__eaglerCreateOptions = options;
 
     log('Configuring EaglerCreateInjector with ' +
@@ -234,129 +309,67 @@
 
     injector.configure(options);
 
-    // Check status after a short delay (configure is async — it polls for ModAPI)
-    setTimeout(function checkStatus() {
+    setTimeout(function () {
       var status = injector.status;
       log('Injector status: ' + status);
-      if (status === 'integration-required') {
-        var missing = injector.missingBlocks;
-        if (missing && missing.length > 0) {
-          warn('Missing blocks: ' + missing.join(', '));
-        }
-        if (!injector.adapter || !injector.adapter.capabilities.render) {
-          warn('Render capability not active.');
-        }
-      } else if (status === 'ready') {
-        log('All Create blocks registered and injector is ready!');
-      }
+      if (status === 'ready') log('All Create blocks registered and injector is ready!');
     }, 2000);
   }
 
   // ---- Create the AnimationBridge renderer with WebGL or Canvas backend ----
   function createRenderer(EC, ECA) {
     try {
-      // Build a ModelBuilder from the assets
       var builder = new EC.ModelBuilder(ECA);
-
-      // Try WebGL first, fall back to Canvas 2D
       var canvas = document.createElement('canvas');
-      canvas.width = 300;
-      canvas.height = 300;
-      canvas.style.position = 'fixed';
-      canvas.style.top = '0';
-      canvas.style.left = '0';
-      canvas.style.width = '100%';
-      canvas.style.height = '100%';
-      canvas.style.pointerEvents = 'none';
-      canvas.style.zIndex = '100';
+      canvas.width = 300; canvas.height = 300;
+      canvas.style.position = 'fixed'; canvas.style.top = '0'; canvas.style.left = '0';
+      canvas.style.width = '100%'; canvas.style.height = '100%';
+      canvas.style.pointerEvents = 'none'; canvas.style.zIndex = '100';
 
-      var glRenderer = null;
-      var canvasRenderer = null;
-      var drawFn = null;
+      var glRenderer = null, canvasRenderer = null, drawFn = null;
 
-      // Load textures asynchronously, then create the renderer
-      // loadModelTextures returns a Map of texture id → {image, placeholder, metadata}
       EC.loadModelTextures(ECA, { allowPlaceholders: true }).then(function (textures) {
         try {
           glRenderer = new EC.WebGLModelRenderer(canvas, textures);
-          drawFn = function (mesh, matrix, record, part) {
-            glRenderer.draw(mesh, matrix, record, part);
-          };
+          drawFn = function (mesh, matrix, record, part) { glRenderer.draw(mesh, matrix, record, part); };
           log('WebGL renderer created.');
         } catch (e) {
           warn('WebGL renderer failed: ' + (e.message || e) + ', trying Canvas 2D.');
           try {
             canvasRenderer = new EC.CanvasModelRenderer(canvas, textures);
-            drawFn = function (mesh, matrix, record, part) {
-              canvasRenderer.draw(mesh, matrix, record, part);
-            };
+            drawFn = function (mesh, matrix, record, part) { canvasRenderer.draw(mesh, matrix, record, part); };
             log('Canvas 2D renderer created.');
-          } catch (e2) {
-            warn('Canvas 2D renderer also failed: ' + (e2.message || e2));
-            return;
-          }
+          } catch (e2) { warn('Canvas 2D renderer also failed: ' + (e2.message || e2)); return; }
         }
 
-        // Create the AnimationBridge with the builder, asset registry, and draw function
         var bridge = new EC.AnimationBridge({
-          builder: builder,
-          registry: ECA.registry,
-          draw: drawFn,
-          beginFrame: function (partial) {
-            var r = glRenderer || canvasRenderer;
-            if (r) r.beginFrame(partial);
-          },
-          endFrame: function (partial) {
-            var r = glRenderer || canvasRenderer;
-            if (r) r.endFrame(partial);
-          }
+          builder: builder, registry: ECA.registry, draw: drawFn,
+          beginFrame: function (p) { var r = glRenderer || canvasRenderer; if (r) r.beginFrame(p); },
+          endFrame: function (p) { var r = glRenderer || canvasRenderer; if (r) r.endFrame(p); }
         });
 
-        // Store on global for the injector to use
         window.__eaglerCreateRenderer = bridge;
         window.__eaglerCreateCanvas = canvas;
 
-        // Reconfigure the injector now that the renderer is ready
         var injector = window.EaglerCreateInjector;
         if (injector && injector.status === 'integration-required') {
           log('Renderer ready, reconfiguring injector with AnimationBridge…');
           var prevOptions = window.__eaglerCreateOptions || {};
           injector.configure(Object.assign({}, prevOptions, { renderer: bridge }));
         }
-      }).catch(function (e) {
-        warn('Texture loading failed: ' + (e.message || e));
-      });
+      }).catch(function (e) { warn('Texture loading failed: ' + (e.message || e)); });
 
-      // Return a lightweight renderer stub that delegates to the bridge once ready
-      // The adapter calls setRotation, beginFrame, endFrame, captureTick, remove
       return {
-        setRotation: function (block, angle, partial) {
-          var bridge = window.__eaglerCreateRenderer;
-          if (bridge) bridge.setRotation(block, angle, partial);
-        },
-        beginFrame: function (partial) {
-          var bridge = window.__eaglerCreateRenderer;
-          if (bridge) bridge.beginFrame(partial);
-        },
-        endFrame: function (partial) {
-          var bridge = window.__eaglerCreateRenderer;
-          if (bridge) bridge.endFrame(partial);
-        },
+        setRotation: function (b, a, p) { var br = window.__eaglerCreateRenderer; if (br) br.setRotation(b, a, p); },
+        beginFrame: function (p) { var br = window.__eaglerCreateRenderer; if (br) br.beginFrame(p); },
+        endFrame: function (p) { var br = window.__eaglerCreateRenderer; if (br) br.endFrame(p); },
         captureTick: function (dt) {
-          var bridge = window.__eaglerCreateRenderer;
-          if (bridge) bridge.captureTick(dt);
-          var r = glRenderer || canvasRenderer;
-          if (r && r.captureTick) r.captureTick(dt);
+          var br = window.__eaglerCreateRenderer; if (br) br.captureTick(dt);
+          var r = glRenderer || canvasRenderer; if (r && r.captureTick) r.captureTick(dt);
         },
-        remove: function (block) {
-          var bridge = window.__eaglerCreateRenderer;
-          if (bridge) bridge.remove(block);
-        }
+        remove: function (b) { var br = window.__eaglerCreateRenderer; if (br) br.remove(b); }
       };
-    } catch (e) {
-      warn('Renderer creation failed: ' + (e.message || e));
-      return null;
-    }
+    } catch (e) { warn('Renderer creation failed: ' + (e.message || e)); return null; }
   }
 
   // ---- Kick off ----

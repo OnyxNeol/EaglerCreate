@@ -29,15 +29,19 @@ const html = source.replace(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi, (tag, 
   writeFileSync(new URL(name, output), code);
   return `<script${attributes} src="/.base44/client/${name}"></script>`;
 });
-// Copy the Create block registration script into the externalized client dir.
+// Copy the Create catalog and block registration scripts into the externalized client dir.
+const createCatalogSrc = readFileSync(new URL('src/client/create-catalog.js', root), 'utf8');
+new Script(createCatalogSrc, { filename: 'create-catalog.js' });
+writeFileSync(new URL('create-catalog.js', output), createCatalogSrc);
+
 const createBlocksSrc = readFileSync(new URL('src/client/create-blocks.js', root), 'utf8');
 new Script(createBlocksSrc, { filename: 'create-blocks.js' });
 writeFileSync(new URL('create-blocks.js', output), createBlocksSrc);
 
-// Inject the block registration script after the EaglerCreate injector bundle.
+// Inject the catalog and block registration scripts after the EaglerCreate injector bundle.
 const finalHtml = html.replace(
   '<script src="/dist/eagler-create.js"></script>',
-  '<script src="/dist/eagler-create.js"></script>\n<script src="/.base44/client/create-blocks.js"></script>'
+  '<script src="/dist/eagler-create.js"></script>\n<script src="/.base44/client/create-catalog.js"></script>\n<script src="/.base44/client/create-blocks.js"></script>'
 );
 
 writeFileSync(new URL('index.html', output), finalHtml);
