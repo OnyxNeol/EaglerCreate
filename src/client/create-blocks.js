@@ -112,7 +112,10 @@
       itemCtor = ModAPI.hooks._rippedConstructors[itemInitKey];
     }
 
-    // ---- Hook ModelBakery.loadModel for Create textures ----
+    // ---- Hook resource manager to serve Create textures from EaglerCreateAssets ----
+    hookResourceManager(ECA);
+
+    // ---- Hook ModelBakery.loadModel for Create model JSONs ----
     hookModelBakery(ECA);
 
     // ---- Register blocks ----
@@ -231,6 +234,83 @@
     } catch (e) {
       warn('Language map injection failed: ' + (e.message || e));
     }
+  }
+
+  // ---- Hook SimpleReloadableResourceManager.getResource to serve Create textures ----
+  // EaglerCreateAssets stores textures as base64 data URIs. The vanilla resource
+  // manager only knows about EPK resources, so Create texture requests fail with
+  // FileNotFoundException and the TextureMap falls back to the missing-texture sprite.
+  // This hook intercepts create-domain requests and returns a SimpleResource wrapping
+  // a ByteArrayInputStream of the decoded PNG bytes.
+  function hookResourceManager(ECA) {
+    var rmKey = 'nmcr_SimpleReloadableResourceManager_getResource';
+    var originalGetResource = ModAPI.hooks.methods[rmKey];
+    if (!originalGetResource) { warn('SimpleReloadableResourceManager.getResource not found.'); return; }
+
+    var baisCtor = ModAPI.hooks._rippedConstructors['ji_ByteArrayInputStream__init_1'];
+    var srCtor = ModAPI.hooks._rippedConstructors['nmcr_SimpleResource__init_0'];
+    if (!baisCtor) { warn('ByteArrayInputStream constructor not found.'); return; }
+    if (!srCtor) { warn('SimpleResource constructor not found.'); return; }
+
+    var rtCreateByteArrayFromData = ModAPI.hooks._teavm.$rt_createByteArrayFromData;
+    if (!rtCreateByteArrayFromData) { warn('$rt_createByteArrayFromData not found.'); return; }
+
+    var textures = ECA.textures || {};
+
+    // Pre-decode all Create textures to Int8Arrays for fast lookup.
+    var decoded = {};
+    for (var key in textures) {
+      try {
+        var dataUri = textures[key];
+        var commaIdx = dataUri.indexOf(',');
+        var b64 = commaIdx >= 0 ? dataUri.substring(commaIdx + 1) : dataUri;
+        var binary = atob(b64);
+        var arr = new Int8Array(binary.length);
+        for (var bi = 0; bi < binary.length; bi++) {
+          arr[bi] = binary.charCodeAt(bi);
+        }
+        decoded[key] = arr;
+      } catch (e) {
+        warn('Failed to decode texture ' + key + ': ' + (e.message || e));
+      }
+    }
+
+    ModAPI.hooks.methods[rmKey] = function ($this, $parResourceLocation) {
+      try {
+        if ($parResourceLocation && $parResourceLocation.$resourceDomain) {
+          var domain = ModAPI.util.unstr($parResourceLocation.$resourceDomain);
+          if (domain === 'create') {
+            var path = ModAPI.util.unstr($parResourceLocation.$resourcePath);
+            // Convert resource path to texture key:
+            //   "textures/blocks/block/cogwheel.png" → "create:block/cogwheel"
+            //   "textures/items/item/raw_zinc.png"   → "create:item/raw_zinc"
+            //   "textures/block/cogwheel.png"        → "create:block/cogwheel"
+            var texPath = path.replace(/^textures\//, '').replace(/\.png$/, '');
+            texPath = texPath.replace(/^blocks\//, '').replace(/^items\//, '');
+            var texKey = 'create:' + texPath;
+
+            var bytes = decoded[texKey];
+            if (bytes) {
+              var teaVMBytes = rtCreateByteArrayFromData(bytes);
+              var bais = baisCtor(teaVMBytes, 0, bytes.length);
+              var resource = srCtor(
+                ModAPI.util.str('EaglerCreate'),
+                $parResourceLocation,
+                bais,
+                null,
+                null
+              );
+              return resource;
+            }
+          }
+        }
+      } catch (e) {
+        // Fall through to original on any error
+      }
+      return originalGetResource.call(this, $this, $parResourceLocation);
+    };
+
+    log('Resource manager hooked for Create textures (' + Object.keys(decoded).length + ' textures decoded).');
   }
 
   // ---- Hook ModelBakery.loadModel to serve Create model JSONs from EaglerCreateAssets ----
